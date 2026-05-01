@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>ZenReader</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --text-color: #1a1a1a;
+            --safe-top: env(safe-area-inset-top);
+            --safe-bottom: env(safe-area-inset-bottom);
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            transition: background-color 0.3s, color 0.3s;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* 阅读区域样式 */
+        #reader-content {
+            column-fill: auto;
+            height: 100%;
+            width: 100%;
+            text-align: justify;
+            line-height: 1.8;
+            padding: calc(var(--safe-top) + 20px) 20px calc(var(--safe-bottom) + 40px) 20px;
+            transition: font-size 0.2s;
+        }
+
+        .theme-sepia { --bg-color: #F5F5DC; --text-color: #5f4b32; }
+        .theme-dark { --bg-color: #1A1A1A; --text-color: #d1d1d1; }
+
+        .menu-transition {
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s;
+        }
+
+        .brightness-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: black;
+            pointer-events: none;
+            z-index: 9999;
+            mix-blend-mode: multiply;
+            opacity: 0;
+        }
+        
+        /* 隐藏滚动条 */
+        ::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body class="theme-light">
+
+    <div id="brightness-layer" class="brightness-overlay"></div>
+
+    <!-- 首页：书架 -->
+    <div id="library-view" class="fixed inset-0 z-10 overflow-y-auto bg-inherit p-6 pt-[calc(env(safe-area-inset-top)+24px)]">
+        <header class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold">ZenReader</h1>
+            <label class="bg-blue-500 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg active:scale-95 transition-transform cursor-pointer">
+                导入 TXT
+                <input type="file" accept=".txt" class="hidden" id="file-input">
+            </label>
+        </header>
+        
+        <div id="book-list" class="grid grid-cols-1 gap-4">
+            <!-- 书目会注入到这里 -->
+        </div>
+
+        <div id="empty-state" class="hidden text-center py-20 text-gray-400">
+            <p>书架空空如也</p>
+            <p class="text-sm">点击右上角导入一本 .txt 小说吧</p>
+        </div>
+    </div>
+
+    <!-- 阅读器界面 -->
+    <div id="reader-view" class="fixed inset-0 z-0 hidden">
+        <!-- 交互区域 -->
+        <div id="touch-zones" class="absolute inset-0 z-10 grid grid-cols-10 h-full">
+            <div id="zone-prev" class="col-span-3 h-full"></div>
+            <div id="zone-menu" class="col-span-4 h-full"></div>
+            <div id="zone-next" class="col-span-3 h-full"></div>
+        </div>
+
+        <!-- 文本渲染层 -->
+        <div id="reader-container" class="h-full w-full relative overflow-hidden">
+            <div id="reader-content"></div>
+        </div>
+
+        <!-- 底部进度条 -->
+        <div class="absolute bottom-1 left-0 w-full text-[10px] text-center opacity-50 z-20 pb-[env(safe-area-inset-bottom)]">
+            <span id="progress-text">0.0%</span>
+        </div>
+    </div>
+
+    <!-- 控制中心菜单 -->
+    <div id="control-menu" class="fixed bottom-0 left-0 w-full bg-white dark:bg-zinc-900 shadow-2xl z-50 rounded-t-2xl menu-transition translate-y-full p-6 pb-[calc(env(safe-area-inset-bottom)+20px)] border-t border-gray-100 dark:border-zinc-800">
+        <div class="max-w-md mx-auto space-y-6">
+            <!-- 顶部操作 -->
+            <div class="flex justify-between items-center mb-2">
+                <button id="btn-back" class="text-blue-500 font-medium">返回书架</button>
+                <div class="flex items-center space-x-4">
+                    <button id="font-dec" class="w-10 h-10 rounded-lg bg-gray-100 dark:bg-zinc-800 flex items-center justify-center font-bold">A-</button>
+                    <button id="font-inc" class="w-10 h-10 rounded-lg bg-gray-100 dark:bg-zinc-800 flex items-center justify-center font-bold">A+</button>
+                </div>
+            </div>
+
+            <!-- 亮度调节 -->
+            <div class="space-y-2">
+                <div class="flex justify-between text-xs text-gray-500">
+                    <span>暗</span>
+                    <span>亮度</span>
+                    <span>亮</span>
+                </div>
+                <input type="range" id="brightness-slider" min="0" max="0.7" step="0.01" value="0" class="w-full accent-blue-500">
+            </div>
+
+            <!-- 配色切换 -->
+            <div class="flex justify-around items-center pt-2">
+                <button onclick="setTheme('light')" class="w-12 h-12 rounded-full border-2 border-gray-200 bg-white shadow-sm"></button>
+                <button onclick="setTheme('sepia')" class="w-12 h-12 rounded-full border-2 border-transparent bg-[#F5F5DC] shadow-sm"></button>
+                <button onclick="setTheme('dark')" class="w-12 h-12 rounded-full border-2 border-transparent bg-[#1A1A1A] shadow-sm"></button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * 数据库管理
+         */
+        const DB_NAME = 'ZenReaderDB';
+        const DB_VERSION = 1;
+        let db;
+
+        const initDB = () => {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onerror = e => reject(e);
+                request.onsuccess = e => {
+                    db = e.target.result;
+                    resolve(db);
+                };
+                request.onupgradeneeded = e => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('books')) {
+                        db.createObjectStore('books', { keyPath: 'id', autoIncrement: true });
+                    }
+                    if (!db.objectStoreNames.contains('settings')) {
+                        db.createObjectStore('settings', { keyPath: 'key' });
+                    }
+                };
+            });
+        };
+
+        const storeBook = (book) => {
+            const tx = db.transaction('books', 'readwrite');
+            return tx.objectStore('books').add(book);
+        };
+
+        const getAllBooks = () => {
+            return new Promise(resolve => {
+                const tx = db.transaction('books', 'readonly');
+                const store = tx.objectStore('books');
+                store.getAll().onsuccess = e => resolve(e.target.result);
+            });
+        };
+
+        const updateBookProgress = (bookId, offset) => {
+            const tx = db.transaction('books', 'readwrite');
+            const store = tx.objectStore('books');
+            store.get(bookId).onsuccess = e => {
+                const data = e.target.result;
+                if(data) {
+                    data.lastOffset = offset;
+                    store.put(data);
+                }
+            };
+        };
+
+        const saveSettings = (key, value) => {
+            const tx = db.transaction('settings', 'readwrite');
+            tx.objectStore('settings').put({ key, value });
+        };
+
+        const getSettings = (key) => {
+            return new Promise(resolve => {
+                const tx = db.transaction('settings', 'readonly');
+                tx.objectStore('settings').get(key).onsuccess = e => resolve(e.target.result?.value);
+            });
+        };
+
+        /**
+         * 阅读器逻辑
+         */
+        let currentBook = null;
+        let fontSize = 18;
+        let isMenuOpen = false;
+
+        const ui = {
+            libraryView: document.getElementById('library-view'),
+            readerView: document.getElementById('reader-view'),
+            bookList: document.getElementById('book-list'),
+            readerContent: document.getElementById('reader-content'),
+            controlMenu: document.getElementById('control-menu'),
+            fileInput: document.getElementById('file-input'),
+            progressText: document.getElementById('progress-text'),
+            brightnessLayer: document.getElementById('brightness-layer'),
+            brightnessSlider: document.getElementById('brightness-slider')
+        };
+
+        // 核心渲染：计算当前位置应显示的文本
+        const renderPage = () => {
+            if (!currentBook) return;
+            
+            const content = currentBook.content;
+            const offset = currentBook.lastOffset || 0;
+            
+            // 设置样式以便计算
+            ui.readerContent.style.fontSize = fontSize + 'px';
+            
+            // 虚拟分页：我们将容器宽度设为屏幕宽，利用 column 布局
+            // 但为了简单和精准控制，这里通过计算容器可容纳的大致字符数进行切片
+            const containerHeight = ui.readerContent.offsetHeight;
+            const containerWidth = ui.readerContent.offsetWidth;
+            
+            // 预估每页字符（基于行高和字号的大略计算）
+            // 1.8 是 line-height, 0.8 是字符平均占位修正
+            const charsPerLine = Math.floor(containerWidth / (fontSize * 0.95));
+            const linesPerPage = Math.floor(containerHeight / (fontSize * 1.8));
+            const estimatedChars = charsPerLine * linesPerPage;
+
+            const pageText = content.substring(offset, offset + estimatedChars);
+            ui.readerContent.innerText = pageText;
+
+            // 更新进度显示
+            const progress = ((offset / content.length) * 100).toFixed(1);
+            ui.progressText.innerText = `${progress}%`;
+            
+            // 保存进度
+            updateBookProgress(currentBook.id, offset);
+            saveSettings('lastBookId', currentBook.id);
+        };
+
+        const openBook = async (book) => {
+            currentBook = book;
+            ui.libraryView.classList.add('hidden');
+            ui.readerView.classList.remove('hidden');
+            renderPage();
+        };
+
+        const closeBook = () => {
+            currentBook = null;
+            ui.readerView.classList.add('hidden');
+            ui.libraryView.classList.remove('hidden');
+            isMenuOpen = false;
+            ui.controlMenu.classList.add('translate-y-full');
+            loadLibrary();
+        };
+
+        const loadLibrary = async () => {
+            const books = await getAllBooks();
+            ui.bookList.innerHTML = '';
+            document.getElementById('empty-state').classList.toggle('hidden', books.length > 0);
+
+            books.forEach(book => {
+                const progress = (( (book.lastOffset || 0) / book.content.length) * 100).toFixed(0);
+                const card = document.createElement('div');
+                card.className = "bg-white dark:bg-zinc-800 p-5 rounded-2xl shadow-sm active:scale-[0.98] transition-transform border border-gray-100 dark:border-zinc-700 flex justify-between items-center";
+                card.innerHTML = `
+                    <div class="flex-1">
+                        <h3 class="font-bold text-lg mb-1 line-clamp-1">${book.title}</h3>
+                        <p class="text-xs text-gray-400">已读 ${progress}%</p>
+                    </div>
+                    <div class="text-blue-500 text-sm font-semibold">继续阅读</div>
+                `;
+                card.onclick = () => openBook(book);
+                ui.bookList.appendChild(card);
+            });
+        };
+
+        /**
+         * 事件绑定
+         */
+        ui.fileInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                const content = event.target.result;
+                const newBook = {
+                    title: file.name.replace('.txt', ''),
+                    content: content,
+                    lastOffset: 0,
+                    addedDate: Date.now()
+                };
+                await storeBook(newBook);
+                loadLibrary();
+            };
+            reader.readAsText(file);
+        };
+
+        document.getElementById('zone-next').onclick = () => {
+            if (isMenuOpen) { toggleMenu(); return; }
+            const containerHeight = ui.readerContent.offsetHeight;
+            const containerWidth = ui.readerContent.offsetWidth;
+            const charsPerLine = Math.floor(containerWidth / (fontSize * 0.95));
+            const linesPerPage = Math.floor(containerHeight / (fontSize * 1.8));
+            const step = charsPerLine * linesPerPage - 5; // 稍微重叠几行提高连贯性
+            
+            if (currentBook.lastOffset + step < currentBook.content.length) {
+                currentBook.lastOffset += step;
+                renderPage();
+            }
+        };
+
+        document.getElementById('zone-prev').onclick = () => {
+            if (isMenuOpen) { toggleMenu(); return; }
+            const containerHeight = ui.readerContent.offsetHeight;
+            const containerWidth = ui.readerContent.offsetWidth;
+            const charsPerLine = Math.floor(containerWidth / (fontSize * 0.95));
+            const linesPerPage = Math.floor(containerHeight / (fontSize * 1.8));
+            const step = charsPerLine * linesPerPage - 5;
+
+            currentBook.lastOffset = Math.max(0, currentBook.lastOffset - step);
+            renderPage();
+        };
+
+        const toggleMenu = () => {
+            isMenuOpen = !isMenuOpen;
+            ui.controlMenu.classList.toggle('translate-y-full', !isMenuOpen);
+        };
+
+        document.getElementById('zone-menu').onclick = toggleMenu;
+        document.getElementById('btn-back').onclick = closeBook;
+
+        // 设置
+        document.getElementById('font-inc').onclick = () => {
+            if (fontSize < 32) { fontSize += 2; renderPage(); saveSettings('fontSize', fontSize); }
+        };
+        document.getElementById('font-dec').onclick = () => {
+            if (fontSize > 12) { fontSize -= 2; renderPage(); saveSettings('fontSize', fontSize); }
+        };
+
+        window.setTheme = (theme) => {
+            document.body.className = `theme-${theme}`;
+            saveSettings('theme', theme);
+        };
+
+        ui.brightnessSlider.oninput = (e) => {
+            ui.brightnessLayer.style.opacity = e.target.value;
+            saveSettings('brightness', e.target.value);
+        };
+
+        /**
+         * 初始化启动
+         */
+        window.onload = async () => {
+            await initDB();
+            
+            // 加载用户设置
+            fontSize = await getSettings('fontSize') || 18;
+            const savedTheme = await getSettings('theme') || 'light';
+            const savedBrightness = await getSettings('brightness') || 0;
+            
+            setTheme(savedTheme);
+            ui.brightnessSlider.value = savedBrightness;
+            ui.brightnessLayer.style.opacity = savedBrightness;
+
+            // 尝试恢复上次阅读的书籍
+            const lastBookId = await getSettings('lastBookId');
+            const books = await getAllBooks();
+            
+            if (lastBookId) {
+                const book = books.find(b => b.id === lastBookId);
+                if (book) openBook(book);
+            }
+            
+            loadLibrary();
+        };
+
+        // Service Worker 注册 (PWA 支持)
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch(() => {});
+            });
+        }
+    </script>
+</body>
+</html>
