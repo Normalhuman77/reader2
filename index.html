@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>ZenReader - AI 智能阅读</title>
+    <!-- 引入 PageFlip 库 -->
+    <script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --text-color: #1a1a1a;
+            --font-size: 18px;
+            --safe-top: env(safe-area-inset-top);
+            --safe-bottom: env(safe-area-inset-bottom);
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            height: 100vh;
+            transition: background 0.3s, color 0.3s;
+        }
+
+        /* 阅读容器 */
+        #reader-view {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 10;
+        }
+
+        .page-container {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* 仿真书页样式 */
+        .page {
+            padding: calc(var(--safe-top) + 2rem) 1.5rem calc(var(--safe-bottom) + 2rem) 1.5rem;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            overflow: hidden;
+            font-size: var(--font-size);
+            line-height: 1.8;
+            text-align: justify;
+            box-shadow: inset 5px 0 10px rgba(0,0,0,0.05);
+        }
+
+        /* 控制面板 */
+        #controls {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.1);
+            display: none;
+            z-index: 50;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .panel-top {
+            background: rgba(255,255,255,0.95);
+            padding: calc(var(--safe-top) + 10px) 20px 20px 20px;
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid #eee;
+        }
+
+        .panel-bottom {
+            background: rgba(255,255,255,0.95);
+            padding: 20px 20px calc(var(--safe-bottom) + 20px) 20px;
+            backdrop-filter: blur(10px);
+            border-top: 1px solid #eee;
+        }
+
+        .dark-mode .panel-top, .dark-mode .panel-bottom {
+            background: rgba(30,30,30,0.95);
+            border-color: #333;
+            color: white;
+        }
+
+        /* AI 侧边栏/弹窗 */
+        #ai-modal {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 60vh;
+            background: white;
+            border-radius: 20px 20px 0 0;
+            z-index: 200;
+            transform: translateY(100%);
+            transition: transform 0.3s ease-out;
+            box-shadow: 0 -10px 30px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+        }
+        #ai-modal.active { transform: translateY(0); }
+        .dark-mode #ai-modal { background: #2a2a2a; color: white; }
+
+        /* 亮度遮罩层 */
+        #brightness-overlay {
+            position: fixed;
+            inset: 0;
+            background: black;
+            pointer-events: none;
+            z-index: 100;
+            opacity: 0;
+        }
+
+        /* 首页书架 */
+        #library-view {
+            padding: calc(var(--safe-top) + 20px) 20px;
+            height: 100vh;
+            overflow-y: auto;
+        }
+
+        .book-card {
+            background: #f9f9f9;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .dark-mode .book-card { background: #2a2a2a; color: #eee; }
+
+        .progress-bar {
+            height: 4px;
+            background: #eee;
+            border-radius: 2px;
+            width: 100px;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+
+        .progress-fill { height: 100%; background: #4a90e2; }
+
+        /* AI 消息泡泡 */
+        .ai-msg { padding: 12px 16px; border-radius: 18px; margin-bottom: 10px; max-width: 85%; }
+        .ai-user { background: #4a90e2; color: white; align-self: flex-end; }
+        .ai-bot { background: #f0f0f0; color: #333; align-self: flex-start; }
+        .dark-mode .ai-bot { background: #3d3d3d; color: #eee; }
+
+        ::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body>
+
+<div id="brightness-overlay"></div>
+
+<!-- 首页：书架 -->
+<div id="library-view" class="active-view">
+    <div class="flex justify-between items-center mb-8">
+        <h1 class="text-3xl font-bold">ZenReader</h1>
+        <div class="flex gap-2">
+            <label class="bg-blue-500 text-white px-4 py-2 rounded-full text-sm cursor-pointer shadow-lg">
+                导入新书
+                <input type="file" id="file-input" accept=".txt" class="hidden">
+            </label>
+        </div>
+    </div>
+    <div id="book-list" class="space-y-4">
+        <!-- 书籍列表 -->
+    </div>
+</div>
+
+<!-- 阅读页 -->
+<div id="reader-view">
+    <div id="book-flip" class="page-container">
+        <!-- 书页 -->
+    </div>
+    <!-- 交互触发区 -->
+    <div id="click-trigger" class="fixed inset-0 z-20 grid grid-cols-3">
+        <div id="prev-zone" class="h-full"></div>
+        <div id="menu-zone" class="h-full"></div>
+        <div id="next-zone" class="h-full"></div>
+    </div>
+</div>
+
+<!-- AI 助手界面 -->
+<div id="ai-modal">
+    <div class="flex justify-between items-center p-4 border-bottom">
+        <h2 class="font-bold">✨ AI 阅读助手</h2>
+        <button id="close-ai" class="text-gray-400">关闭</button>
+    </div>
+    <div id="ai-chat-content" class="flex-1 overflow-y-auto p-4 flex flex-col space-y-2">
+        <div class="ai-msg ai-bot">你好！我是你的阅读助手。我可以帮你总结书籍、解释词汇或讨论故事情节。</div>
+    </div>
+    <div class="p-4 border-t flex gap-2">
+        <input type="text" id="ai-input" placeholder="问问 AI..." class="flex-1 border rounded-full px-4 py-2 dark:bg-gray-800 dark:border-gray-700 outline-none">
+        <button id="ai-send" class="bg-blue-500 text-white px-4 py-2 rounded-full">发送</button>
+    </div>
+</div>
+
+<!-- 控制面板 -->
+<div id="controls">
+    <div class="panel-top flex justify-between items-center">
+        <button id="back-to-lib" class="text-blue-500">← 返回</button>
+        <span id="current-title" class="font-medium truncate max-w-[150px]">书名</span>
+        <button id="btn-ai-summary" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-bold">✨ 生成摘要</button>
+    </div>
+    
+    <div class="panel-bottom space-y-6">
+        <div class="flex items-center justify-between">
+            <span>字号</span>
+            <div class="flex space-x-4">
+                <button id="font-dec" class="w-10 h-10 border rounded flex items-center justify-center">A-</button>
+                <button id="font-inc" class="w-10 h-10 border rounded flex items-center justify-center">A+</button>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between">
+            <span>配色</span>
+            <div class="flex space-x-3">
+                <button data-theme="light" class="w-8 h-8 bg-white border rounded-full"></button>
+                <button data-theme="sepia" class="w-8 h-8 bg-[#F5F5DC] border rounded-full"></button>
+                <button data-theme="dark" class="w-8 h-8 bg-[#1A1A1A] border rounded-full"></button>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between">
+            <span>亮度</span>
+            <input type="range" id="brightness-slider" min="0" max="0.7" step="0.01" value="0" class="flex-1 ml-4">
+        </div>
+
+        <div class="flex justify-center pt-2">
+             <button id="open-ai-chat" class="w-full bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg">✨ 开启 AI 深度对话</button>
+        </div>
+    </div>
+</div>
+
+<script>
+/** * ZenReader Core & AI Logic 
+ */
+const DB_NAME = 'ZenReaderDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'books';
+const apiKey = ""; // 自动由环境注入
+let db;
+
+let state = {
+    currentBook: null,
+    books: [],
+    settings: {
+        fontSize: 18,
+        theme: 'light',
+        brightness: 0
+    },
+    pageFlip: null
+};
+
+// --- Gemini API 集成逻辑 ---
+async function callGemini(prompt, systemPrompt = "你是一个专业的阅读辅助助手。") {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+    
+    let retries = 0;
+    const maxRetries = 5;
+    
+    while (retries <= maxRetries) {
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: prompt }] }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] }
+                })
+            });
+            const data = await response.json();
+            return data.candidates?.[0]?.content?.parts?.[0]?.text || "抱歉，我暂时无法回答这个问题。";
+        } catch (error) {
+            if (retries === maxRetries) throw error;
+            const delay = Math.pow(2, retries) * 1000;
+            await new Promise(r => setTimeout(r, delay));
+            retries++;
+        }
+    }
+}
+
+// --- 数据库逻辑 ---
+async function initDB() {
+    return new Promise((resolve) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = e => e.target.result.createObjectStore(STORE_NAME, { keyPath: 'id' });
+        request.onsuccess = e => { db = e.target.result; resolve(); };
+    });
+}
+
+async function loadBooks() {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const books = await new Promise(r => tx.objectStore(STORE_NAME).getAll().onsuccess = e => r(e.target.result));
+    state.books = books.sort((a,b) => b.lastRead - a.lastRead);
+    renderLibrary();
+}
+
+async function saveBook(title, content) {
+    const book = { id: Date.now().toString(), title, content, offset: 0, progress: 0, lastRead: Date.now() };
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).add(book);
+    await loadBooks();
+}
+
+async function updateBookProgress(id, offset, progress) {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    store.get(id).onsuccess = e => {
+        const book = e.target.result;
+        if (book) {
+            book.offset = offset;
+            book.progress = progress;
+            book.lastRead = Date.now();
+            store.put(book);
+        }
+    };
+}
+
+// --- UI 渲染 ---
+function renderLibrary() {
+    const list = document.getElementById('book-list');
+    list.innerHTML = state.books.length ? state.books.map(book => `
+        <div class="book-card" onclick="openBook('${book.id}')">
+            <div class="flex-1">
+                <div class="font-bold text-lg">${book.title}</div>
+                <div class="progress-bar"><div class="progress-fill" style="width: ${book.progress}%"></div></div>
+            </div>
+            <div class="text-sm text-gray-400 pl-4">${book.progress}%</div>
+        </div>
+    `).join('') : '<div class="text-center text-gray-400 py-20">书架空空的，导入一本试试？</div>';
+}
+
+function paginate(content, containerWidth, containerHeight, fontSize) {
+    const charsPerLine = Math.floor((containerWidth - 50) / (fontSize * 0.9));
+    const linesPerPage = Math.floor((containerHeight - 160) / (fontSize * 1.8));
+    const charsPerPage = charsPerLine * linesPerPage;
+    const pages = [];
+    for (let i = 0; i < content.length; i += charsPerPage) {
+        pages.push(content.substring(i, i + charsPerPage));
+    }
+    return pages;
+}
+
+async function openBook(id) {
+    const book = state.books.find(b => b.id === id);
+    state.currentBook = book;
+    document.getElementById('library-view').style.display = 'none';
+    document.getElementById('reader-view').style.display = 'block';
+    document.getElementById('current-title').innerText = book.title;
+    initReader(book);
+}
+
+function initReader(book) {
+    const flipContainer = document.getElementById('book-flip');
+    flipContainer.innerHTML = '';
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const pagesText = paginate(book.content, w, h, state.settings.fontSize);
+
+    pagesText.forEach(text => {
+        const div = document.createElement('div');
+        div.className = 'page';
+        div.innerHTML = `<p>${text.replace(/\n/g, '<br>')}</p>`;
+        flipContainer.appendChild(div);
+    });
+
+    if (state.pageFlip) state.pageFlip.destroy();
+    state.pageFlip = new St.PageFlip(flipContainer, {
+        width: w, height: h, size: "stretch", drawShadow: true,
+        usePortrait: true, flippingTime: 800, mobileScrollSupport: false
+    });
+    state.pageFlip.loadFromHTML(document.querySelectorAll('.page'));
+
+    const startPage = Math.floor(book.offset / (book.content.length / pagesText.length)) || 0;
+    state.pageFlip.turnToPage(startPage);
+
+    state.pageFlip.on('flip', (e) => {
+        const pageCount = pagesText.length;
+        const currentPage = e.data;
+        const progress = Math.round((currentPage / (pageCount - 1)) * 100);
+        const approxOffset = Math.floor((currentPage / pageCount) * book.content.length);
+        updateBookProgress(book.id, approxOffset, progress);
+    });
+}
+
+// --- 事件监听 ---
+document.getElementById('file-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => await saveBook(file.name.replace('.txt', ''), ev.target.result);
+    reader.readAsText(file);
+});
+
+document.getElementById('menu-zone').addEventListener('click', () => {
+    const menu = document.getElementById('controls');
+    menu.style.display = menu.style.display === 'flex' ? 'none' : 'flex';
+});
+
+document.getElementById('prev-zone').addEventListener('click', () => state.pageFlip?.flipPrev());
+document.getElementById('next-zone').addEventListener('click', () => state.pageFlip?.flipNext());
+
+document.getElementById('back-to-lib').addEventListener('click', () => {
+    document.getElementById('reader-view').style.display = 'none';
+    document.getElementById('controls').style.display = 'none';
+    document.getElementById('library-view').style.display = 'block';
+    loadBooks();
+});
+
+// AI 交互逻辑
+const aiModal = document.getElementById('ai-modal');
+const aiChatContent = document.getElementById('ai-chat-content');
+
+function addChatMessage(role, text) {
+    const div = document.createElement('div');
+    div.className = `ai-msg ${role === 'user' ? 'ai-user' : 'ai-bot'}`;
+    div.innerText = text;
+    aiChatContent.appendChild(div);
+    aiChatContent.scrollTop = aiChatContent.scrollHeight;
+}
+
+document.getElementById('btn-ai-summary').addEventListener('click', async () => {
+    if (!state.currentBook) return;
+    addChatMessage('bot', '✨ 正在分析本书内容，生成摘要中...');
+    aiModal.classList.add('active');
+    
+    // 取前 3000 字用于总结
+    const sample = state.currentBook.content.substring(0, 3000);
+    const summary = await callGemini(`请为这本书写一段精炼的摘要，包含核心主题和主要看点：\n\n${sample}`);
+    addChatMessage('bot', summary);
+});
+
+document.getElementById('open-ai-chat').addEventListener('click', () => {
+    aiModal.classList.add('active');
+    document.getElementById('controls').style.display = 'none';
+});
+
+document.getElementById('close-ai').addEventListener('click', () => aiModal.classList.remove('active'));
+
+document.getElementById('ai-send').addEventListener('click', async () => {
+    const input = document.getElementById('ai-input');
+    const text = input.value.trim();
+    if (!text) return;
+    
+    addChatMessage('user', text);
+    input.value = '';
+    
+    const context = state.currentBook ? `当前书籍是《${state.currentBook.title}》。` : "";
+    const response = await callGemini(`${context}\n\n读者问：${text}`);
+    addChatMessage('bot', response);
+});
+
+// 设置逻辑
+document.querySelectorAll('[data-theme]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+        state.settings.theme = e.target.dataset.theme;
+        applySettings();
+    });
+});
+
+document.getElementById('font-inc').addEventListener('click', () => {
+    if(state.settings.fontSize < 24) {
+        state.settings.fontSize += 2;
+        applySettings();
+        if(state.currentBook) initReader(state.currentBook);
+    }
+});
+
+document.getElementById('font-dec').addEventListener('click', () => {
+    if(state.settings.fontSize > 14) {
+        state.settings.fontSize -= 2;
+        applySettings();
+        if(state.currentBook) initReader(state.currentBook);
+    }
+});
+
+document.getElementById('brightness-slider').addEventListener('input', (e) => {
+    document.getElementById('brightness-overlay').style.opacity = e.target.value;
+});
+
+function applySettings() {
+    const root = document.documentElement;
+    const isDark = state.settings.theme === 'dark';
+    const isSepia = state.settings.theme === 'sepia';
+    
+    root.style.setProperty('--bg-color', isDark ? '#1a1a1a' : (isSepia ? '#F5F5DC' : '#ffffff'));
+    root.style.setProperty('--text-color', isDark ? '#eeeeee' : (isSepia ? '#433422' : '#1a1a1a'));
+    document.body.classList.toggle('dark-mode', isDark);
+    root.style.setProperty('--font-size', state.settings.fontSize + 'px');
+}
+
+window.onload = async () => {
+    await initDB();
+    await loadBooks();
+};
+</script>
+</body>
+</html>
