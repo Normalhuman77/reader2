@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="ZenReader">
+    <title>ZenReader - 极简离线阅读</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --text-color: #1a1a1a;
+            --font-size: 18px;
+            --ui-bg: rgba(255, 255, 255, 0.95);
+            --ui-text: #1a1a1a;
+        }
+
+        /* 主题方案更新：深色模式使用纯黑背景 */
+        .theme-light { --bg-color: #ffffff; --text-color: #1a1a1a; --ui-bg: rgba(255, 255, 255, 0.95); --ui-text: #1a1a1a; }
+        .theme-sepia { --bg-color: #F4ECD8; --text-color: #433422; --ui-bg: rgba(244, 236, 216, 0.95); --ui-text: #433422; }
+        .theme-dark  { --bg-color: #000000; --text-color: #7a7a7a; --ui-bg: rgba(30, 30, 30, 0.95); --ui-text: #cccccc; }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, sans-serif;
+            margin: 0;
+            overflow: hidden;
+            transition: background-color 0.3s, color 0.3s;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* 优化后的阅读容器：适度减小边距，容纳更多文字 */
+        .reader-container {
+            width: 100vw;
+            height: 100vh;
+            padding-left: 18px;
+            padding-right: 18px;
+            padding-top: calc(env(safe-area-inset-top) + 20px);
+            padding-bottom: calc(env(safe-area-inset-bottom) + 20px);
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        #content-area {
+            flex: 1;
+            font-size: var(--font-size);
+            line-height: 1.6; /* 稍微紧凑一些的行高，容纳更多内容 */
+            text-align: justify;
+            text-justify: inter-ideograph; /* 中文两端对齐优化 */
+            white-space: pre-wrap;
+            word-break: break-all;
+            overflow: hidden;
+        }
+
+        #touch-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 10;
+            display: flex;
+        }
+        .touch-zone-prev { width: 30%; }
+        .touch-zone-menu { width: 40%; }
+        .touch-zone-next { width: 30%; }
+
+        .panel {
+            position: fixed;
+            left: 0; right: 0;
+            background: var(--ui-bg);
+            backdrop-filter: blur(15px);
+            z-index: 100;
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            color: var(--ui-text);
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+        }
+
+        #top-bar {
+            top: 0;
+            height: calc(env(safe-area-inset-top) + 50px);
+            padding-top: env(safe-area-inset-top);
+            display: flex; align-items: center; justify-content: space-between;
+            padding-left: 16px; padding-right: 16px;
+            transform: translateY(-100%);
+        }
+
+        #bottom-menu {
+            bottom: 0;
+            padding: 20px 20px calc(env(safe-area-inset-bottom) + 20px);
+            transform: translateY(100%);
+        }
+
+        .panel.active { transform: translateY(0); }
+
+        #brightness-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background: black;
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0;
+        }
+
+        #library-view {
+            position: fixed;
+            inset: 0;
+            background: #f8f9fa;
+            z-index: 200;
+            overflow-y: auto;
+            padding: calc(env(safe-area-inset-top) + 20px) 20px;
+            color: #333;
+        }
+
+        .book-card {
+            background: white;
+            padding: 18px;
+            border-radius: 16px;
+            margin-bottom: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            display: flex; justify-content: space-between; align-items: center;
+            transition: transform 0.2s;
+        }
+        .book-card:active { transform: scale(0.98); }
+
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%; height: 4px;
+            background: #ddd; border-radius: 2px;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 24px; height: 24px;
+            background: #007aff; border-radius: 50%;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }
+    </style>
+</head>
+<body class="theme-light">
+
+<div id="brightness-overlay"></div>
+
+<!-- 书架视图 -->
+<div id="library-view">
+    <div class="flex justify-between items-center mb-8">
+        <h1 class="text-3xl font-bold tracking-tight">ZenReader</h1>
+        <label class="bg-blue-600 text-white px-6 py-2.5 rounded-full font-semibold shadow-lg active:opacity-80 transition-all cursor-pointer">
+            导入新书
+            <input type="file" id="file-input" accept=".txt" class="hidden">
+        </label>
+    </div>
+    <div id="book-list"></div>
+    <div id="empty-state" class="text-center py-32 text-gray-400 hidden">
+        <p class="text-lg">书架是空的</p>
+        <p class="text-sm">导入 TXT 开始纯净阅读</p>
+    </div>
+</div>
+
+<!-- 阅读器触控层 -->
+<div id="touch-overlay">
+    <div class="touch-zone-prev" id="zone-prev"></div>
+    <div class="touch-zone-menu" id="zone-menu"></div>
+    <div class="touch-zone-next" id="zone-next"></div>
+</div>
+
+<div class="reader-container">
+    <div id="content-area"></div>
+</div>
+
+<!-- 顶部菜单 (增加了明显的返回按钮) -->
+<div id="top-bar" class="panel">
+    <button id="btn-back" class="text-blue-500 font-bold px-2 py-1 flex items-center text-base">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+        </svg>
+        返回书架
+    </button>
+    <div id="current-book-name" class="font-bold truncate max-w-[150px] text-sm flex-1 text-right"></div>
+</div>
+
+<!-- 底部控制菜单 -->
+<div id="bottom-menu" class="panel">
+    <div class="mb-8">
+        <div class="flex justify-between text-xs mb-3 font-medium opacity-70">
+            <span>阅读进度</span>
+            <span id="label-progress">0%</span>
+        </div>
+        <input type="range" id="slider-progress" min="0" max="100" step="0.1" value="0">
+    </div>
+
+    <div class="grid grid-cols-2 gap-4 mb-8">
+        <div class="flex items-center justify-around bg-black/5 rounded-2xl p-2">
+            <button id="btn-font-dec" class="w-12 h-12 text-xl font-bold">A-</button>
+            <span id="label-font-size" class="text-base font-bold">18</span>
+            <button id="btn-font-inc" class="w-12 h-12 text-xl font-bold">A+</button>
+        </div>
+        <div class="flex items-center gap-3 bg-black/5 rounded-2xl p-2 px-4">
+            <span class="text-xs font-bold opacity-40">亮度</span>
+            <input type="range" id="slider-brightness" min="0" max="0.8" step="0.01" value="0" style="direction: rtl;">
+        </div>
+    </div>
+
+    <div class="flex justify-between gap-3">
+        <button data-theme="light" class="flex-1 py-3 rounded-2xl border-2 border-transparent bg-white text-black shadow-sm font-bold text-sm">明亮</button>
+        <button data-theme="sepia" class="flex-1 py-3 rounded-2xl border-2 border-transparent bg-[#F4ECD8] text-[#433422] font-bold text-sm">护眼</button>
+        <button data-theme="dark" class="flex-1 py-3 rounded-2xl border-2 border-gray-700 bg-black text-[#aaa] font-bold text-sm">纯黑</button>
+    </div>
+</div>
+
+<script>
+/**
+ * 1. 编码检测与乱码修复
+ */
+const EncodingUI = {
+    async decodeFile(arrayBuffer) {
+        const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+        try { return utf8Decoder.decode(arrayBuffer); } 
+        catch (e) {
+            const gbkDecoder = new TextDecoder('gbk');
+            return gbkDecoder.decode(arrayBuffer);
+        }
+    }
+};
+
+/**
+ * 2. 数据库管理 (IndexedDB)
+ */
+const DB_NAME = 'ZenReaderDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'books';
+let db;
+
+function initDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+            }
+        };
+        request.onsuccess = (e) => { db = e.target.result; resolve(db); };
+        request.onerror = (e) => reject(e);
+    });
+}
+
+const Store = {
+    saveBook: (book) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        return tx.objectStore(STORE_NAME).put(book);
+    },
+    getAllBooks: () => {
+        return new Promise((resolve) => {
+            const tx = db.transaction(STORE_NAME, 'readonly');
+            const request = tx.objectStore(STORE_NAME).getAll();
+            request.onsuccess = () => resolve(request.result);
+        });
+    },
+    getBook: (id) => {
+        return new Promise((resolve) => {
+            const tx = db.transaction(STORE_NAME, 'readonly');
+            const request = tx.objectStore(STORE_NAME).get(id);
+            request.onsuccess = () => resolve(request.result);
+        });
+    }
+};
+
+/**
+ * 3. 核心应用状态
+ */
+const AppState = {
+    currentBook: null,
+    offset: 0,
+    fontSize: 18,
+    pageSize: 0,
+    isMenuVisible: false,
+    historyStack: [], // 记录经过的偏移量，实现完美的"上一页"退回
+    
+    saveToLocal: () => {
+        if (AppState.currentBook) {
+            AppState.currentBook.offset = AppState.offset;
+            AppState.currentBook.fontSize = AppState.fontSize;
+            Store.saveBook(AppState.currentBook);
+            localStorage.setItem('lastBookId', AppState.currentBook.id);
+        }
+    }
+};
+
+/**
+ * 4. 渲染引擎 (二分法极致排版)
+ */
+const ContentRenderer = {
+    render: () => {
+        if (!AppState.currentBook) return;
+        const container = document.getElementById('content-area');
+        container.style.fontSize = AppState.fontSize + 'px';
+        const text = AppState.currentBook.content;
+        const availableHeight = container.clientHeight;
+        
+        let start = AppState.offset;
+        if (start >= text.length) start = Math.max(0, text.length - 10);
+
+        // 步骤 A: 快速寻找溢出边界
+        let end = start + 400; // 初始猜测400字
+        container.innerText = text.substring(start, end);
+        while (container.scrollHeight <= availableHeight && end < text.length) {
+            end += 400;
+            container.innerText = text.substring(start, end);
+        }
+
+        // 步骤 B: 二分法寻找恰好填满屏幕的精确字符数
+        let left = Math.max(start, end - 400);
+        let right = Math.min(text.length, end);
+        let bestEnd = left;
+
+        while (left <= right) {
+            let mid = Math.floor((left + right) / 2);
+            container.innerText = text.substring(start, mid);
+            if (container.scrollHeight <= availableHeight) {
+                bestEnd = mid; // 能装下，尝试装更多
+                left = mid + 1;
+            } else {
+                right = mid - 1; // 装不下，减少字数
+            }
+        }
+
+        // 防止死循环(例如字体比容器还大)
+        if (bestEnd === start && start < text.length) bestEnd = start + 1;
+
+        AppState.pageSize = bestEnd - start;
+        container.innerText = text.substring(start, bestEnd);
+        
+        // 更新进度条 UI
+        const progress = (start / text.length * 100).toFixed(1);
+        document.getElementById('label-progress').innerText = progress + '%';
+        document.getElementById('slider-progress').value = progress;
+    }
+};
+
+/**
+ * 5. 交互控制器
+ */
+async function refreshLibrary() {
+    const books = await Store.getAllBooks();
+    const listEl = document.getElementById('book-list');
+    const emptyEl = document.getElementById('empty-state');
+    
+    if (books.length === 0) {
+        emptyEl.classList.remove('hidden');
+        listEl.innerHTML = '';
+        return;
+    }
+    
+    emptyEl.classList.add('hidden');
+    listEl.innerHTML = books.map(book => {
+        const progress = ((book.offset || 0) / book.content.length * 100).toFixed(1);
+        return `
+            <div class="book-card" onclick="openBook('${book.id}')">
+                <div class="flex-1">
+                    <h3 class="font-bold text-gray-800 text-lg">${book.name}</h3>
+                    <p class="text-xs text-gray-400 mt-2 font-medium">上次阅读至 ${progress}%</p>
+                </div>
+                <div class="text-blue-600 font-black text-xs bg-blue-50 px-3 py-1 rounded-full">继续阅读</div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function openBook(id) {
+    const book = await Store.getBook(id);
+    if (!book) return;
+    AppState.currentBook = book;
+    AppState.offset = book.offset || 0;
+    AppState.fontSize = book.fontSize || 18;
+    AppState.historyStack = []; // 重置历史记录
+    
+    document.getElementById('current-book-name').innerText = book.name;
+    document.getElementById('label-font-size').innerText = AppState.fontSize;
+    document.getElementById('library-view').classList.add('hidden');
+    ContentRenderer.render();
+    AppState.saveToLocal();
+}
+
+// 文件导入
+document.getElementById('file-input').onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+        const arrayBuffer = event.target.result;
+        const content = await EncodingUI.decodeFile(arrayBuffer);
+        
+        const book = {
+            id: 'book_' + Date.now(),
+            name: file.name.replace('.txt', ''),
+            content: content,
+            offset: 0,
+            fontSize: 18,
+            timestamp: Date.now()
+        };
+        
+        await Store.saveBook(book);
+        await refreshLibrary();
+        openBook(book.id);
+    };
+    reader.readAsArrayBuffer(file);
+};
+
+// --- 翻页控制 ---
+document.getElementById('zone-next').onclick = () => {
+    if (AppState.isMenuVisible) { toggleMenu(); return; }
+    if (AppState.offset + AppState.pageSize < AppState.currentBook.content.length) {
+        // 记录当前位置到历史栈中
+        AppState.historyStack.push(AppState.offset);
+        AppState.offset += AppState.pageSize;
+        ContentRenderer.render();
+        AppState.saveToLocal();
+    }
+};
+
+document.getElementById('zone-prev').onclick = () => {
+    if (AppState.isMenuVisible) { toggleMenu(); return; }
+    
+    if (AppState.historyStack.length > 0) {
+        // 精确退回到上一页的起始位置
+        AppState.offset = AppState.historyStack.pop();
+    } else {
+        // 如果没有历史记录(例如刚打开书)，进行粗略退回
+        AppState.offset = Math.max(0, AppState.offset - AppState.pageSize);
+    }
+    
+    ContentRenderer.render();
+    AppState.saveToLocal();
+};
+
+function toggleMenu() {
+    AppState.isMenuVisible = !AppState.isMenuVisible;
+    document.getElementById('top-bar').classList.toggle('active', AppState.isMenuVisible);
+    document.getElementById('bottom-menu').classList.toggle('active', AppState.isMenuVisible);
+}
+
+document.getElementById('zone-menu').onclick = toggleMenu;
+
+// 返回书架
+document.getElementById('btn-back').onclick = () => {
+    toggleMenu();
+    document.getElementById('library-view').classList.remove('hidden');
+    refreshLibrary();
+};
+
+// 字体与样式调节
+document.getElementById('btn-font-inc').onclick = () => {
+    if (AppState.fontSize < 30) {
+        AppState.fontSize += 1;
+        document.getElementById('label-font-size').innerText = AppState.fontSize;
+        ContentRenderer.render();
+        AppState.saveToLocal();
+    }
+};
+
+document.getElementById('btn-font-dec').onclick = () => {
+    if (AppState.fontSize > 12) {
+        AppState.fontSize -= 1;
+        document.getElementById('label-font-size').innerText = AppState.fontSize;
+        ContentRenderer.render();
+        AppState.saveToLocal();
+    }
+};
+
+document.getElementById('slider-progress').onchange = (e) => {
+    const percent = e.target.value / 100;
+    AppState.historyStack = []; // 破坏了连续性，清空历史栈
+    AppState.offset = Math.floor(AppState.currentBook.content.length * percent);
+    ContentRenderer.render();
+    AppState.saveToLocal();
+};
+
+document.querySelectorAll('[data-theme]').forEach(btn => {
+    btn.onclick = () => {
+        document.body.className = 'theme-' + btn.dataset.theme;
+        document.querySelectorAll('[data-theme]').forEach(b => b.style.borderColor = 'transparent');
+        btn.style.borderColor = btn.dataset.theme === 'dark' ? '#666' : '#007aff';
+    };
+});
+
+document.getElementById('slider-brightness').oninput = (e) => {
+    document.getElementById('brightness-overlay').style.opacity = e.target.value;
+};
+
+// 启动与重置
+(async () => {
+    await initDB();
+    await refreshLibrary();
+    const lastBookId = localStorage.getItem('lastBookId');
+    if (lastBookId) openBook(lastBookId);
+})();
+
+window.onresize = () => {
+    AppState.historyStack = []; // 改变尺寸后历史排版失效，清空
+    ContentRenderer.render();
+};
+</script>
+</body>
+</html>
